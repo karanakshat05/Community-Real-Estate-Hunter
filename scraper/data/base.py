@@ -201,11 +201,11 @@ class BaseScraper(ABC):
             Tuple of (min_budget, max_budget) in correct order
         """
         if min_b > max_b:
-            print(f"⚠️  Warning: Min budget {min_b} > Max budget {max_b}. Swapping.")
+            print(f"Warning: Min budget {min_b} > Max budget {max_b}. Swapping.")
             return max_b, min_b
 
         if min_b < 0:
-            print(f"⚠️  Warning: Negative budget {min_b}, setting to 0")
+            print(f"Warning: Negative budget {min_b}, setting to 0")
             min_b = 0
 
         return min_b, max_b

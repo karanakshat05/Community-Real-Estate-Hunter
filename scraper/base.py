@@ -47,14 +47,14 @@ class BaseScraper(ABC):
     def _validate_budget(self, min_b: int, max_b: int):
         """Sanity check to ensure budget ranges make sense."""
         if min_b > max_b:
-            print(f"⚠️  Warning: Min budget ({min_b}) is higher than Max ({max_b}). Swapping them.")
+            print(f"Warning: Min budget ({min_b}) is higher than Max ({max_b}). Swapping them.")
             return max_b, min_b
         return min_b, max_b
 
     def log_success(self, location: str, category: str):
         """Hook for future cache logging."""
-        print(f"✅ [{self.source_name}] Successfully found results for {location} ({category})")
+        print(f"[{self.source_name}] Successfully found results for {location} ({category})")
 
     def log_failure(self, location: str, category: str):
         """Hook for future health tracking."""
-        print(f"❌ [{self.source_name}] No results or error for {location} ({category})")
+        print(f"[{self.source_name}] No results or error for {location} ({category})")
