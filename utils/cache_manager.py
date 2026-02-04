@@ -142,6 +142,7 @@ from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, asdict
 from enum import Enum
+import hashlib
 
 
 class CacheStatus(Enum):
@@ -194,10 +195,13 @@ class CachedEntry:
 @dataclass
 class ScraperHashEntry(CachedEntry):
     """Cached hash entry for a specific site/location/bhk combination"""
-    hash: str
+    # hash: str
+    search_hash: str
     full_url: str
-    bhk_code: Optional[str] = None
-    location_hash: Optional[str] = None
+    # bhk_code: Optional[str] = None
+    vendor_bhk_token: Optional[str] = None
+    # location_hash: Optional[str] = None
+    vendor_location_token: Optional[str] = None
 
 
 class BaseCache(ABC):
@@ -320,7 +324,16 @@ class ScraperCache(BaseCache):
         """Update cache metadata timestamp"""
         self.data["metadata"]["last_updated"] = datetime.now().isoformat()
 
+    @staticmethod
+    def make_search_hash(site: str, location: str, bhk: str) -> str:
+        """
+        Deterministic hash representing *search intent*, not vendor internals.
+        """
+        key = f"{site.lower()}|{location.lower().strip()}|{bhk.lower()}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
     def get(self, site: str, location: str, bhk: str) -> Optional[ScraperHashEntry]:
+        search_hash = self.make_search_hash(site, location, bhk)
         """
         Retrieve cached hash entry.
 
@@ -332,15 +345,17 @@ class ScraperCache(BaseCache):
         Returns:
             ScraperHashEntry if found, None otherwise
         """
-        location_key = self._normalize_location(location)
+        # location_key = self._normalize_location(location)
 
         try:
-            entry_data = self.data["sites"][site][location_key][bhk]
+            # entry_data = self.data["sites"][site][location_key][bhk]
+            entry_data = self.data["sites"][site][search_hash]
             entry = ScraperHashEntry(**entry_data)
 
             # Update last_used timestamp
             entry.last_used = datetime.now().isoformat()
-            self.data["sites"][site][location_key][bhk]["last_used"] = entry.last_used
+            # self.data["sites"][site][location_key][bhk]["last_used"] = entry.last_used
+            self.data["sites"][site][search_hash]["last_used"] = entry.last_used
             self._save()
 
             return entry
@@ -369,6 +384,7 @@ class ScraperCache(BaseCache):
             bhk_code: BHK code portion of hash (optional)
             location_hash: Location portion of hash (optional)
         """
+        search_hash = self.make_search_hash(site, location, bhk)
         location_key = self._normalize_location(location)
         now = datetime.now().isoformat()
 
@@ -380,10 +396,11 @@ class ScraperCache(BaseCache):
 
         # Create new entry
         entry = ScraperHashEntry(
-            hash=hash,
+            # hash=hash,
+            search_hash=search_hash,
             full_url=full_url,
-            bhk_code=bhk_code,
-            location_hash=location_hash,
+            vendor_bhk_token=bhk_code,
+            vendor_location_token=location_hash,
             discovered_at=now,
             last_used=now,
             success_count=0,
@@ -391,7 +408,7 @@ class ScraperCache(BaseCache):
             status=CacheStatus.HEALTHY.value
         )
 
-        self.data["sites"][site][location_key][bhk] = asdict(entry)
+        self.data["sites"][site][search_hash] = asdict(entry)
         self._update_metadata()
         self._save()
 
@@ -406,14 +423,14 @@ class ScraperCache(BaseCache):
             location: Location name
             bhk: BHK type
         """
+        search_hash = self.make_search_hash(site, location, bhk)
         entry = self.get(site, location, bhk)
         if entry:
             entry.success_count += 1
             entry.update_status()
 
-            location_key = self._normalize_location(location)
-            self.data["sites"][site][location_key][bhk]["success_count"] = entry.success_count
-            self.data["sites"][site][location_key][bhk]["status"] = entry.status
+            self.data["sites"][site][search_hash]["success_count"] = entry.success_count
+            self.data["sites"][site][search_hash]["status"] = entry.status
             self._save()
 
     def mark_failure(self, site: str, location: str, bhk: str):
@@ -425,14 +442,14 @@ class ScraperCache(BaseCache):
             location: Location name
             bhk: BHK type
         """
+        search_hash = self.make_search_hash(site, location, bhk)
         entry = self.get(site, location, bhk)
         if entry:
             entry.failure_count += 1
             entry.update_status()
 
-            location_key = self._normalize_location(location)
-            self.data["sites"][site][location_key][bhk]["failure_count"] = entry.failure_count
-            self.data["sites"][site][location_key][bhk]["status"] = entry.status
+            self.data["sites"][site][search_hash]["failure_count"] = entry.failure_count
+            self.data["sites"][site][search_hash]["status"] = entry.status
             self._save()
 
             if entry.is_broken():
@@ -502,6 +519,31 @@ class ScraperCache(BaseCache):
 
         print(f"\n📈 Total Entries: {total_entries}")
         print("=" * 70 + "\n")
+
+    def preflight(
+        self,
+        site: str,
+        location: str,
+        bhk: str
+        ) -> Optional[str]:
+        """
+        Pre-flight discovery:
+        - If healthy cache exists → return cached URL
+        - If degraded → allow reuse
+        - If broken/missing → force rediscovery
+        """
+        entry = self.get(site, location, bhk)
+
+        if not entry:
+            print(f"No cache entry for {site}/{location}/{bhk}")
+            return None
+
+        if entry.is_broken():
+            print(f"Cache broken for {site}/{location}/{bhk}, rediscovery required")
+            return None
+
+        print(f"Using cached URL for {site}/{location}/{bhk}")
+        return entry.full_url
 
 
 class SessionCache(BaseCache):

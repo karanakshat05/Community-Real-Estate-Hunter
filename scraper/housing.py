@@ -3,12 +3,14 @@ from typing import List, Optional
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from base import BaseScraper, ScrapedListing
+from utils.cache_manager import get_scraper_cache
 
 
 class HousingScraper(BaseScraper):
     def __init__(self, headless: bool = True):
         super().__init__(headless=headless)
         self.source_name = "Housing"
+        self.cache = get_scraper_cache()
 
         # Keep selectors pragmatic, not pretty
         self.SELECTORS = {
@@ -51,11 +53,11 @@ class HousingScraper(BaseScraper):
         return None
 
     async def _search_location(self, page, location: str) -> bool:
-        print(f"[Housing] 🔍 Searching for: {location}")
+        print(f"[Housing] Searching for: {location}")
 
         search = await self._find_first(page, self.SELECTORS["search_input"])
         if not search:
-            print("[Housing] ❌ Search box not found")
+            print("[Housing] Search box not found")
             return False
 
         await search.click()
@@ -77,7 +79,7 @@ class HousingScraper(BaseScraper):
             print(f"[DEBUG] URL changed to: {page.url}")
             return True
         except PlaywrightTimeout:
-            print("[Housing] ❌ URL never changed after search")
+            print("[Housing] URL never changed after search")
             return False
 
     async def _scroll(self, page, rounds=3):
@@ -140,7 +142,11 @@ class HousingScraper(BaseScraper):
     ) -> List[ScrapedListing]:
 
         budget_min, budget_max = self._validate_budget(budget_min, budget_max)
+        bhk = kwargs.get("bhk", "any")
         listings: List[ScrapedListing] = []
+
+        # 1. Pre-flight Cache Check
+        cached_url = self.cache.preflight(self.source_name, location, bhk)
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -166,20 +172,33 @@ class HousingScraper(BaseScraper):
             start_url = "https://housing.com/in/rent"
 
             try:
-                print("[Housing] 🏠 Opening rent page")
-                await page.goto(start_url, timeout=60000, wait_until="domcontentloaded")
+                if cached_url:
+                    print(f"[Housing] Jumping directly to cached URL: {cached_url}")
+                    await page.goto(cached_url, timeout=60000, wait_until="domcontentloaded")
+                else:
+                    print("[Housing] Opening rent page")
+                    await page.goto(start_url, timeout=60000, wait_until="domcontentloaded")
 
-                if not await self._search_location(page, location):
-                    self.log_failure(location, "rent")
-                    return []
+                    if not await self._search_location(page, location):
+                        self.log_failure(location, "rent")
+                        return []
 
-                # 🔑 critical step
-                if not await self._wait_for_redirect(page, start_url):
-                    self.log_failure(location, "rent")
-                    return []
+                    # critical step
+                    if not await self._wait_for_redirect(page, start_url):
+                        self.log_failure(location, "rent")
+                        return []
 
-                # 🔑 force hydration
-                await page.goto(page.url, wait_until="domcontentloaded")
+                    # force hydration
+                    await page.goto(page.url, wait_until="domcontentloaded")
+
+                    # Cache discovery
+                    self.cache.set(
+                        site=self.source_name,
+                        location=location,
+                        bhk=bhk,
+                        hash="unknown",  # We don't have the internal hash yet, but we have the URL
+                        full_url=page.url
+                    )
 
                 # wait for ANY listing card
                 cards = []
@@ -193,8 +212,9 @@ class HousingScraper(BaseScraper):
                         continue
 
                 if not cards:
-                    print(f"[Housing] ⚠️ No listings available for {location}")
+                    print(f"[Housing] No listings available for {location}")
                     self.log_failure(location, "rent")
+                    self.cache.mark_failure(self.source_name, location, bhk)
                     return []
 
                 # scroll AFTER cards exist
@@ -214,6 +234,7 @@ class HousingScraper(BaseScraper):
                         listings.append(listing)
 
                 self.log_success(location, "rent")
+                self.cache.mark_success(self.source_name, location, bhk)
 
             finally:
                 await browser.close()
