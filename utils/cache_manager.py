@@ -195,12 +195,12 @@ class CachedEntry:
 @dataclass
 class ScraperHashEntry(CachedEntry):
     """Cached hash entry for a specific site/location/bhk combination"""
-    # hash: str
     search_hash: str
+    site: str
+    location: str
+    bhk: str
     full_url: str
-    # bhk_code: Optional[str] = None
     vendor_bhk_token: Optional[str] = None
-    # location_hash: Optional[str] = None
     vendor_location_token: Optional[str] = None
 
 
@@ -316,10 +316,6 @@ class ScraperCache(BaseCache):
             "sites": {}
         }
 
-    def _normalize_location(self, location: str) -> str:
-        """Normalize location name for consistent cache keys"""
-        return location.lower().replace(" ", "-")
-
     def _update_metadata(self):
         """Update cache metadata timestamp"""
         self.data["metadata"]["last_updated"] = datetime.now().isoformat()
@@ -374,30 +370,20 @@ class ScraperCache(BaseCache):
     ):
         """
         Store hash entry in cache.
-
-        Args:
-            site: Website name
-            location: Location name
-            bhk: BHK type
-            hash: Hash value
-            full_url: Complete URL
-            bhk_code: BHK code portion of hash (optional)
-            location_hash: Location portion of hash (optional)
         """
         search_hash = self.make_search_hash(site, location, bhk)
-        location_key = self._normalize_location(location)
         now = datetime.now().isoformat()
 
-        # Create nested structure if needed
+        # Create site group if needed
         if site not in self.data["sites"]:
             self.data["sites"][site] = {}
-        if location_key not in self.data["sites"][site]:
-            self.data["sites"][site][location_key] = {}
 
         # Create new entry
         entry = ScraperHashEntry(
-            # hash=hash,
             search_hash=search_hash,
+            site=site,
+            location=location,
+            bhk=bhk,
             full_url=full_url,
             vendor_bhk_token=bhk_code,
             vendor_location_token=location_hash,
@@ -459,34 +445,30 @@ class ScraperCache(BaseCache):
     def has_location(self, site: str, location: str) -> bool:
         """
         Check if we have any cached data for a location.
-
-        Args:
-            site: Website name
-            location: Location name
-
-        Returns:
-            True if location exists in cache
         """
-        location_key = self._normalize_location(location)
-        return site in self.data["sites"] and location_key in self.data["sites"][site]
+        if site not in self.data["sites"]:
+            return False
+        
+        target = location.lower().strip()
+        for entry_dict in self.data["sites"][site].values():
+            if entry_dict.get("location", "").lower().strip() == target:
+                return True
+        return False
 
     def get_all_bhk_types(self, site: str, location: str) -> list:
         """
         Get all cached BHK types for a location.
-
-        Args:
-            site: Website name
-            location: Location name
-
-        Returns:
-            List of BHK types (e.g., ["1bhk", "2bhk"])
         """
-        location_key = self._normalize_location(location)
-
-        try:
-            return list(self.data["sites"][site][location_key].keys())
-        except KeyError:
+        if site not in self.data["sites"]:
             return []
+
+        target = location.lower().strip()
+        bhk_types = set()
+        for entry_dict in self.data["sites"][site].values():
+            if entry_dict.get("location", "").lower().strip() == target:
+                bhk_types.add(entry_dict.get("bhk"))
+        
+        return sorted(list(bhk_types))
 
     def print_summary(self):
         """Print a summary of cached entries"""
@@ -498,16 +480,25 @@ class ScraperCache(BaseCache):
         print(f"\n📅 Last Updated: {metadata.get('last_updated', 'Unknown')}")
 
         total_entries = 0
-        for site, locations in self.data.get("sites", {}).items():
+        for site, entries in self.data.get("sites", {}).items():
             print(f"\n🌐 Site: {site.upper()}")
-            for location, bhk_data in locations.items():
-                bhk_count = len(bhk_data)
+            
+            # Group by location
+            by_location = {}
+            for entry_dict in entries.values():
+                loc = entry_dict.get("location", "Unknown")
+                if loc not in by_location:
+                    by_location[loc] = []
+                by_location[loc].append(entry_dict)
+            
+            for location, loc_entries in by_location.items():
+                bhk_count = len(loc_entries)
                 total_entries += bhk_count
 
                 # Show health status
-                healthy = sum(1 for b in bhk_data.values() if b.get('status') == 'healthy')
-                degraded = sum(1 for b in bhk_data.values() if b.get('status') == 'degraded')
-                broken = sum(1 for b in bhk_data.values() if b.get('status') == 'broken')
+                healthy = sum(1 for e in loc_entries if e.get('status') == 'healthy')
+                degraded = sum(1 for e in loc_entries if e.get('status') == 'degraded')
+                broken = sum(1 for e in loc_entries if e.get('status') == 'broken')
 
                 status_str = f"✅ {healthy}" if healthy else ""
                 if degraded:
